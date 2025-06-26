@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AtlasDB — Geo-Replicated KV Store ＋ FPGA Acceleration</title>
+
+  <!-- Tailwind CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+  
+  <style>
+    input[type="range"].slider::-webkit-slider-thumb {
+      appearance: none;
+      height: 14px;
+      width: 14px;
+      background: #3b82f6;
+      border-radius: 9999px;
+      cursor: pointer;
+    }
+    input[type="range"].slider::-webkit-slider-runnable-track {
+      background: #334155;
+    }
+    .pulse-animation {
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    .glow {
+      box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+    }
+    .region-dot {
+      filter: drop-shadow(0 0 6px #38bdf8) drop-shadow(0 0 12px #38bdf8);
+      transition: r 0.2s;
+    }
+    .region-dot.failed {
+      filter: drop-shadow(0 0 8px #ef4444) drop-shadow(0 0 16px #ef4444);
+    }
+    .region-dot.degraded {
+      filter: drop-shadow(0 0 8px #f59e0b) drop-shadow(0 0 16px #f59e0b);
+    }
+  </style>
+
+  <!-- External Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.2/dist/gsap.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.2/dist/MotionPathPlugin.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.8.5/dist/d3.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans">
+  <nav class="flex items-center justify-between px-6 py-3 bg-gray-800 shadow-lg">
+    <div class="flex items-center gap-2 text-xl font-semibold">
+      <span class="text-blue-400"><i class="fas fa-globe"></i> AtlasDB</span>
+      <span class="text-sm text-gray-400">Geo-Replicated KV Store ＋ FPGA Acceleration</span>
+    </div>
+    <div class="flex items-center gap-3 text-sm font-medium">
+      <button id="demo-btn" class="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 transition-colors">
+        <i class="fas fa-play"></i> Start Demo
+      </button>
+      <button id="settings-btn" class="px-4 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 transition-colors">
+        <i class="fas fa-cog"></i> Settings
+      </button>
+      <button id="github-btn" class="px-4 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 transition-colors">
+        <i class="fab fa-github"></i> GitHub
+      </button>
+    </div>
+  </nav>
+
+  <main class="grid grid-cols-1 lg:grid-cols-3 gap-6 p-6">
+    <!-- Left Column: 3D Earth Visualization -->
+    <section class="lg:col-span-2 space-y-6">
+      <div>
+        <h2 class="text-xl font-bold mb-3"><i class="fas fa-network-wired text-blue-400"></i> Global Replication Network</h2>
+        <div id="earth-wrapper" class="relative w-full h-96 rounded-xl bg-gray-800 ring-1 ring-gray-700 overflow-hidden glow">
+          <div id="earth-container" class="absolute inset-0"></div>
+          <svg id="overlay" class="absolute inset-0 w-full h-full pointer-events-none"></svg>
+          <div id="controls" class="absolute top-4 left-4 space-y-2">
+            <button id="toggle-rotation" class="px-3 py-1 bg-gray-700 rounded text-xs hover:bg-gray-600">
+              <i class="fas fa-pause"></i> Pause Rotation
+            </button>
+            <button id="toggle-connections" class="px-3 py-1 bg-gray-700 rounded text-xs hover:bg-gray-600">
+              <i class="fas fa-eye"></i> Toggle Connections
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Metrics Panel -->
+      <div class="bg-gray-800 rounded-xl p-4 ring-1 ring-gray-700">
+        <h3 class="font-semibold mb-3"><i class="fas fa-chart-line text-green-400"></i> Performance Metrics</h3>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+          <div class="bg-gray-700 p-3 rounded">
+            <div class="text-gray-400">Replication Events</div>
+            <div id="rep-events" class="text-blue-400 font-bold text-xl">0</div>
+          </div>
+          <div class="bg-gray-700 p-3 rounded">
+            <div class="text-gray-400">FPGA Ops/sec</div>
+            <div id="fpga-ops" class="text-green-400 font-bold text-xl">—</div>
+          </div>
+          <div class="bg-gray-700 p-3 rounded">
+            <div class="text-gray-400">Partitioned Regions</div>
+            <div id="partitioned" class="text-yellow-400 font-bold text-xl">0</div>
+          </div>
+          <div class="bg-gray-700 p-3 rounded">
+            <div class="text-gray-400">Avg Latency (ms)</div>
+            <div id="avg-lat" class="text-pink-400 font-bold text-xl">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Real-time Charts -->
+      <div class="bg-gray-800 rounded-xl p-4 ring-1 ring-gray-700">
+        <h3 class="font-semibold mb-3"><i class="fas fa-chart-area text-purple-400"></i> Real-time Performance</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <canvas id="latencyChart" style="height: 200px;"></canvas>
+          </div>
+          <div>
+            <canvas id="throughputChart" style="height: 200px;"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Activity Log -->
+      <div class="bg-gray-800 rounded-xl p-4 ring-1 ring-gray-700">
+        <h3 class="font-semibold mb-2"><i class="fas fa-terminal text-blue-400"></i> Activity Log</h3>
+        <div id="log" class="max-h-40 overflow-y-auto text-xs text-gray-400 space-y-1 font-mono bg-gray-900 p-3 rounded"></div>
+      </div>
+    </section>
+
+    <!-- Right Column: Status Panel -->
+    <aside id="status-panel" class="space-y-4">
+      <div class="bg-gray-800 rounded-xl p-4 ring-1 ring-gray-700">
+        <h3 class="font-semibold mb-3"><i class="fas fa-heartbeat text-red-400"></i> System Status</h3>
+        <div class="space-y-2 text-sm">
+          <div class="flex justify-between">
+            <span>Overall Health</span>
+            <span id="health-status" class="text-green-400 font-semibold">Operational</span>
+          </div>
+          <div class="flex justify-between">
+            <span>Replication Lag</span>
+            <span id="lag" class="text-blue-400">12ms</span>
+          </div>
+          <div class="flex justify-between">
+            <span>FPGA Utilization</span>
+            <span id="fpga" class="text-purple-400">67%</span>
+          </div>
+          <div class="flex justify-between">
+            <span>Merge Ops/sec</span>
+            <span id="mops" class="text-yellow-400">1,247</span>
+          </div>
+          <div class="flex justify-between">
+            <span>Active Connections</span>
+            <span id="active-conns" class="text-green-400">8/12</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Regional Status -->
+      <div class="bg-gray-800 rounded-xl p-4 ring-1 ring-gray-700">
+        <h3 class="font-semibold mb-3"><i class="fas fa-map-marked-alt text-yellow-400"></i> Regional Status</h3>
+        <div id="regions" class="space-y-2 text-sm"></div>
+      </div>
+
+      <!-- Settings Panel -->
+      <div id="settings-panel" class="bg-gray-800 rounded-xl p-4 ring-1 ring-gray-700 hidden">
+        <h3 class="font-semibold mb-3"><i class="fas fa-sliders-h text-blue-400"></i> Configuration</h3>
+        <div class="space-y-3 text-sm">
+          <div>
+            <label class="block text-gray-400 mb-1">Replication Frequency</label>
+            <input type="range" id="replication-freq" min="1" max="10" value="3" class="slider w-full">
+            <span id="freq-value" class="text-xs text-gray-500">3 ops/sec</span>
+          </div>
+          <div>
+            <label class="block text-gray-400 mb-1">FPGA Acceleration</label>
+            <input type="range" id="fpga-accel" min="0" max="100" value="67" class="slider w-full">
+            <span id="fpga-value" class="text-xs text-gray-500">67%</span>
+          </div>
+          <div>
+            <label class="block text-gray-400 mb-1">Failover Threshold</label>
+            <input type="range" id="failover-threshold" min="100" max="1000" value="500" class="slider w-full">
+            <span id="failover-value" class="text-xs text-gray-500">500ms</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Actions -->
+      <div class="bg-gray-800 rounded-xl p-4 ring-1 ring-gray-700">
+        <h3 class="font-semibold mb-3"><i class="fas fa-bolt text-orange-400"></i> Quick Actions</h3>
+        <div class="space-y-2">
+          <button id="simulate-failure" class="w-full px-3 py-2 bg-red-600 hover:bg-red-500 rounded text-sm transition-colors">
+            <i class="fas fa-exclamation-triangle"></i> Simulate Node Failure
+          </button>
+          <button id="force-replication" class="w-full px-3 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm transition-colors">
+            <i class="fas fa-sync"></i> Force Full Replication
+          </button>
+          <button id="reset-metrics" class="w-full px-3 py-2 bg-gray-600 hover:bg-gray-500 rounded text-sm transition-colors">
+            <i class="fas fa-undo"></i> Reset Metrics
+          </button>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    // Global state
+    let scene, camera, renderer, earth, nodes = [], connections = [];
+    let isRotating = true, showConnections = true, demoRunning = false;
+    let repCounter = 0, fpgaOps = 0, partitionedRegions = 0;
+    let latencyChart, throughputChart;
+    let latencyData = [], throughputData = [];
+
+    // Regional data
+    const regions = [
+      { name: 'US-East', lat: 40.7128, lng: -74.0060, status: 'healthy', load: 0.65 },
+      { name: 'US-West', lat: 37.7749, lng: -122.4194, status: 'healthy', load: 0.78 },
+      { name: 'EU-Central', lat: 52.5200, lng: 13.4050, status: 'healthy', load: 0.45 },
+      { name: 'Asia-Pacific', lat: 35.6762, lng: 139.6503, status: 'degraded', load: 0.89 },
+      { name: 'Brazil', lat: -23.5505, lng: -46.6333, status: 'healthy', load: 0.56 },
+      { name: 'Australia', lat: -33.8688, lng: 151.2093, status: 'healthy', load: 0.67 }
+    ];
+
+    // Global state for D3 map
+    let d3Connections = []; // {from: regionIdx, to: regionIdx, active: bool}
+    let d3Svg, d3Projection, d3LineGroup, d3NodeGroup, d3LabelGroup;
+
+    // Initialize everything
+    function init() {
+      initD3Map();
+      initCharts();
+      initRegionalStatus();
+      initEventHandlers();
+      startDemo();
+      log('AtlasDB system initialized successfully');
+    }
+
+    // Initialize D3.js 2D dark world map with animated connections
+    function initD3Map() {
+      const container = document.getElementById('earth-container');
+      container.innerHTML = '';
+      const width = container.clientWidth || 600;
+      const height = container.clientHeight || 400;
+
+      d3Svg = d3.select(container)
+        .append('svg')
+        .attr('width', width)
+        .attr('height', height)
+        .style('background', '#18181b')
+        .style('border-radius', '0.75rem')
+        .style('position', 'relative');
+
+      d3Projection = d3.geoNaturalEarth1()
+        .scale(width / 6.5)
+        .translate([width / 2, height / 2]);
+
+      const path = d3.geoPath().projection(d3Projection);
+
+      // Build connections (all pairs, random active)
+      d3Connections = [];
+      for (let i = 0; i < regions.length; i++) {
+        for (let j = i + 1; j < regions.length; j++) {
+          d3Connections.push({
+            from: i,
+            to: j,
+            active: Math.random() < 0.7 // 70% active initially
+          });
+        }
+      }
+
+      d3.json('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json').then(world => {
+        const countries = topojson.feature(world, world.objects.countries);
+
+        // Draw land
+        d3Svg.append('g')
+          .selectAll('path')
+          .data(countries.features)
+          .enter().append('path')
+          .attr('d', path)
+          .attr('fill', '#23272e')
+          .attr('stroke', '#334155')
+          .attr('stroke-width', 0.5);
+
+        // Draw connections (lines)
+        d3LineGroup = d3Svg.append('g').attr('class', 'connections');
+        updateD3Connections();
+
+        // Draw region nodes
+        d3NodeGroup = d3Svg.append('g').attr('class', 'nodes');
+        d3NodeGroup.selectAll('circle')
+          .data(regions)
+          .enter()
+          .append('circle')
+          .attr('class', d => `region-dot ${d.status}`)
+          .attr('cx', d => d3Projection([d.lng, d.lat])[0])
+          .attr('cy', d => d3Projection([d.lng, d.lat])[1])
+          .attr('r', 8)
+          .attr('fill', d => d.status === 'healthy' ? '#10b981' : d.status === 'degraded' ? '#f59e0b' : '#ef4444')
+          .attr('stroke', '#fff')
+          .attr('stroke-width', 1.5)
+          .on('mouseover', function (event, d) {
+            d3.select(this).transition().attr('r', 14);
+            showTooltip(event, d);
+          })
+          .on('mouseout', function () {
+            d3.select(this).transition().attr('r', 8);
+            hideTooltip();
+          });
+
+        // Draw region labels
+        d3LabelGroup = d3Svg.append('g').attr('class', 'labels');
+        d3LabelGroup.selectAll('text')
+          .data(regions)
+          .enter()
+          .append('text')
+          .attr('x', d => d3Projection([d.lng, d.lat])[0] + 12)
+          .attr('y', d => d3Projection([d.lng, d.lat])[1] + 4)
+          .text(d => d.name)
+          .attr('fill', '#f1f5f9')
+          .attr('font-size', 13)
+          .attr('font-weight', 600)
+          .attr('pointer-events', 'none');
+      });
+
+      // Tooltip
+      const tooltip = d3.select(container)
+        .append('div')
+        .attr('class', 'absolute bg-gray-800 text-xs text-gray-100 px-2 py-1 rounded shadow-lg pointer-events-none')
+        .style('opacity', 0);
+
+      function showTooltip(event, d) {
+        tooltip
+          .html(`<b>${d.name}</b><br>Status: <span class="${d.status === 'healthy' ? 'text-green-400' : d.status === 'degraded' ? 'text-yellow-400' : 'text-red-400'}">${d.status}</span><br>Load: ${(d.load * 100).toFixed(0)}%`)
+          .style('left', (event.offsetX + 20) + 'px')
+          .style('top', (event.offsetY - 10) + 'px')
+          .transition().duration(150).style('opacity', 1);
+      }
+      function hideTooltip() {
+        tooltip.transition().duration(150).style('opacity', 0);
+      }
+    }
+
+    // Draw or update D3 connections (lines)
+    function updateD3Connections() {
+      if (!d3LineGroup) return;
+      d3LineGroup.selectAll('line').remove();
+      if (!showConnections) return; // <--- Only draw if enabled
+      d3Connections.forEach(conn => {
+        const from = regions[conn.from];
+        const to = regions[conn.to];
+        const [x1, y1] = d3Projection([from.lng, from.lat]);
+        const [x2, y2] = d3Projection([to.lng, to.lat]);
+        d3LineGroup.append('line')
+          .attr('x1', x1)
+          .attr('y1', y1)
+          .attr('x2', x2)
+          .attr('y2', y2)
+          .attr('stroke', conn.active ? '#38bdf8' : '#f59e0b')
+          .attr('stroke-width', conn.active ? 2.5 : 1.5)
+          .attr('opacity', conn.active ? 0.6 : 0.25)
+          .attr('class', conn.active ? 'active-conn' : 'partitioned-conn');
+      });
+    }
+
+    // Replication pulse animation on a connection
+    function animateConnectionPulse(connIdx) {
+      const conn = d3Connections[connIdx];
+      if (!conn || !conn.active) return;
+      const from = regions[conn.from];
+      const to = regions[conn.to];
+      const [x1, y1] = d3Projection([from.lng, from.lat]);
+      const [x2, y2] = d3Projection([to.lng, to.lat]);
+      // Draw a temporary animated circle moving along the line
+      const pulse = d3LineGroup.append('circle')
+        .attr('r', 7)
+        .attr('fill', '#f59e0b')
+        .attr('opacity', 0.8)
+        .attr('cx', x1)
+        .attr('cy', y1);
+      pulse.transition()
+        .duration(700)
+        .attr('cx', x2)
+        .attr('cy', y2)
+        .attr('opacity', 0.2)
+        .remove();
+    }
+
+    // Replication logic using D3 connections
+    function replicatePulse() {
+      const activeConns = d3Connections.map((c, idx) => ({...c, idx})).filter(c => c.active);
+      if (!activeConns.length) return;
+
+      const conn = activeConns[Math.floor(Math.random() * activeConns.length)];
+      repCounter++;
+      document.getElementById('rep-events').textContent = repCounter;
+
+      const fromRegion = regions[conn.from].name;
+      const toRegion = regions[conn.to].name;
+      log(`Replication pulse: ${fromRegion} → ${toRegion}`);
+
+      // Animate pulse on the line
+      animateConnectionPulse(conn.idx);
+
+      // Optionally: highlight source node
+      d3NodeGroup.selectAll('circle')
+        .filter((d, i) => i === conn.from)
+        .transition().attr('fill', '#3b82f6')
+        .transition().delay(500).attr('fill', d => d.status === 'healthy' ? '#10b981' : d.status === 'degraded' ? '#f59e0b' : '#ef4444');
+    }
+
+    // Initialize charts
+    function initCharts() {
+      const chartOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { display: false },
+          y: { display: true, grid: { color: '#374151' }, ticks: { color: '#9ca3af' } }
+        },
+        plugins: { legend: { display: false } }
+      };
+
+      // Latency Chart
+      latencyChart = new Chart(document.getElementById('latencyChart'), {
+        type: 'line',
+        data: {
+          labels: Array(20).fill(''),
+          datasets: [{
+            data: Array(20).fill(0),
+            borderColor: '#f59e0b',
+            backgroundColor: 'rgba(245, 158, 11, 0.1)',
+            fill: true,
+            tension: 0.4
+          }]
+        },
+        options: { ...chartOptions, plugins: { ...chartOptions.plugins, title: { display: true, text: 'Latency (ms)', color: '#f59e0b' } } }
+      });
+
+      // Throughput Chart
+      throughputChart = new Chart(document.getElementById('throughputChart'), {
+        type: 'line',
+        data: {
+          labels: Array(20).fill(''),
+          datasets: [{
+            data: Array(20).fill(0),
+            borderColor: '#10b981',
+            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+            fill: true,
+            tension: 0.4
+          }]
+        },
+        options: { ...chartOptions, plugins: { ...chartOptions.plugins, title: { display: true, text: 'Throughput (ops/s)', color: '#10b981' } } }
+      });
+    }
+
+    // Initialize regional status display
+    function initRegionalStatus() {
+      const regionsContainer = document.getElementById('regions');
+      regions.forEach(region => {
+        const statusDiv = document.createElement('div');
+        statusDiv.className = 'flex justify-between items-center p-2 bg-gray-700 rounded';
+        statusDiv.innerHTML = `
+          <div>
+            <div class="font-medium">${region.name}</div>
+            <div class="text-xs text-gray-400">Load: ${(region.load * 100).toFixed(0)}%</div>
+          </div>
+          <div class="text-xs ${region.status === 'healthy' ? 'text-green-400' : region.status === 'degraded' ? 'text-yellow-400' : 'text-red-400'}">
+            <i class="fas fa-circle"></i> ${region.status}
+          </div>
+        `;
+        regionsContainer.appendChild(statusDiv);
+      });
+    }
+
+    // Initialize event handlers
+    function initEventHandlers() {
+      // Navigation buttons
+      document.getElementById('demo-btn').addEventListener('click', () => {
+        demoRunning = !demoRunning;
+        document.getElementById('demo-btn').innerHTML = demoRunning ? 
+          '<i class="fas fa-stop"></i> Stop Demo' : '<i class="fas fa-play"></i> Start Demo';
+        if (demoRunning) startDemo(); else stopDemo();
+      });
+
+      document.getElementById('settings-btn').addEventListener('click', () => {
+        const panel = document.getElementById('settings-panel');
+        panel.classList.toggle('hidden');
+      });
+
+      document.getElementById('github-btn').addEventListener('click', () => {
+        window.open('https://github.com/kartik-rao-0701/AtlasDB-Fpga-Geo-KV', '_blank');
+      });
+
+      // 3D controls
+      document.getElementById('toggle-rotation').addEventListener('click', () => {
+        isRotating = !isRotating;
+        document.getElementById('toggle-rotation').innerHTML = isRotating 
+          ? '<i class="fas fa-pause"></i> Pause Rotation' 
+          : '<i class="fas fa-play"></i> Resume Rotation';
+      });
+
+      document.getElementById('toggle-connections').addEventListener('click', () => {
+        showConnections = !showConnections;
+        document.getElementById('toggle-connections').innerHTML = showConnections ? 
+          '<i class="fas fa-eye"></i> Toggle Connections' : '<i class="fas fa-eye-slash"></i> Toggle Connections';
+        updateD3Connections(); // <--- Add this line
+      });
+
+      // Quick actions
+      document.getElementById('simulate-failure').addEventListener('click', simulateFailure);
+      document.getElementById('force-replication').addEventListener('click', forceReplication);
+      document.getElementById('reset-metrics').addEventListener('click', resetMetrics);
+
+      // Settings sliders
+      ['replication-freq', 'fpga-accel', 'failover-threshold'].forEach(id => {
+        const slider = document.getElementById(id);
+        const valueSpan = document.getElementById(id.replace('-', '-') + '-value');
+        slider.addEventListener('input', (e) => {
+          const value = e.target.value;
+          const unit = id === 'replication-freq' ? ' ops/sec' : 
+                      id === 'fpga-accel' ? '%' : 'ms';
+          valueSpan.textContent = value + unit;
+        });
+      });
+    }
+
+    // Start demo
+    function startDemo() {
+      demoRunning = true;
+      log('Demo started - monitoring replication activity');
+      
+      // Start replication pulses
+      setInterval(() => {
+        if (demoRunning) replicatePulse();
+      }, 2000);
+
+      // Update metrics
+      setInterval(() => {
+        if (demoRunning) updateMetrics();
+      }, 1000);
+
+      // Update charts
+      setInterval(() => {
+        if (demoRunning) updateCharts();
+      }, 2000);
+    }
+
+    // Stop demo
+    function stopDemo() {
+      demoRunning = false;
+      log('Demo stopped');
+    }
+
+    // Simulate replication pulse
+    function replicatePulse() {
+      const activeConns = d3Connections.map((c, idx) => ({...c, idx})).filter(c => c.active);
+      if (!activeConns.length) return;
+      
+      const conn = activeConns[Math.floor(Math.random() * activeConns.length)];
+      repCounter++;
+      document.getElementById('rep-events').textContent = repCounter;
+      
+      const fromRegion = regions[conn.from].name;
+      const toRegion = regions[conn.to].name;
+      log(`Replication pulse: ${fromRegion} → ${toRegion}`);
+      
+      // Animate pulse on the line
+      animateConnectionPulse(conn.idx);
+
+      // Optionally: highlight source node
+      d3NodeGroup.selectAll('circle')
+        .filter((d, i) => i === conn.from)
+        .transition().attr('fill', '#3b82f6')
+        .transition().delay(500).attr('fill', d => d.status === 'healthy' ? '#10b981' : d.status === 'degraded' ? '#f59e0b' : '#ef4444');
+    }
+
+    // Update metrics
+    function updateMetrics() {
+      fpgaOps = Math.floor(400 + Math.random() * 400);
+      partitionedRegions = d3Connections.filter(c => !c.active).length;
+      const avgLatency = (50 + Math.random() * 100).toFixed(1);
+      
+      document.getElementById('fpga-ops').textContent = fpgaOps.toLocaleString();
+      document.getElementById('partitioned').textContent = partitionedRegions;
+      document.getElementById('avg-lat').textContent = avgLatency;
+      
+      // Update status panel
+      document.getElementById('lag').textContent = (Math.random() * 30 + 10).toFixed(0) + 'ms';
+      document.getElementById('fpga').textContent = (Math.random() * 40 + 50).toFixed(0) + '%';
+      document.getElementById('mops').textContent = Math.floor(Math.random() * 2000 + 1000).toLocaleString();
+      document.getElementById('active-conns').textContent = `${d3Connections.filter(c => c.active).length}/${d3Connections.length}`;
+    }
+
+    // Update charts
+    function updateCharts() {
+      const latency = Math.random() * 100 + 50;
+      const throughput = Math.random() * 1000 + 500;
+      
+      latencyData.push(latency);
+      throughputData.push(throughput);
+      
+      if (latencyData.length > 20) latencyData.shift();
+      if (throughputData.length > 20) throughputData.shift();
+      
+      latencyChart.data.datasets[0].data = [...latencyData];
+      throughputChart.data.datasets[0].data = [...throughputData];
+      
+      latencyChart.update('none');
+      throughputChart.update('none');
+    }
+
+    // Simulate failure
+    function simulateFailure() {
+      const healthyRegions = regions.filter(r => r.status === 'healthy');
+      if (healthyRegions.length === 0) return;
+      
+      const region = healthyRegions[Math.floor(Math.random() * healthyRegions.length)];
+      region.status = 'failed';
+      
+      // Update node color
+      d3NodeGroup.selectAll('circle')
+        .filter(d => d === region)
+        .attr('fill', '#ef4444');
+
+      // Disable connections
+      d3Connections.forEach(conn => {
+        if (conn.from === regions.indexOf(region) || conn.to === regions.indexOf(region)) {
+          conn.active = false;
+        }
+      });
+      updateD3Connections();
+
+      log(`ALERT: ${region.name} node failed - initiating failover procedures`);
+      document.getElementById('health-status').textContent = 'Degraded';
+      document.getElementById('health-status').className = 'text-yellow-400 font-semibold';
+
+      // Auto-recover after 10 seconds
+      setTimeout(() => {
+        region.status = 'healthy';
+        d3NodeGroup.selectAll('circle')
+          .filter(d => d === region)
+          .attr('fill', '#10b981');
+        d3Connections.forEach(conn => {
+          if (conn.from === regions.indexOf(region) || conn.to === regions.indexOf(region)) {
+            conn.active = Math.random() > 0.2;
+          }
+        });
+        updateD3Connections();
+        log(`${region.name} node recovered - system stabilizing`);
+        document.getElementById('health-status').textContent = 'Operational';
+        document.getElementById('health-status').className = 'text-green-400 font-semibold';
+      }, 10000);
+    }
+
+    // Force replication
+    function forceReplication() {
+      log('Initiating full replication across all regions...');
+      let count = 0;
+      const interval = setInterval(() => {
+        replicatePulse();
+        count++;
+        if (count >= 10) {
+          clearInterval(interval);
+          log('Full replication completed successfully');
+        }
+      }, 300);
+    }
+
+    // Reset metrics and connections
+    function resetMetrics() {
+      repCounter = 0;
+      fpgaOps = 0;
+      partitionedRegions = 0;
+      latencyData = [];
+      throughputData = [];
+      
+      document.getElementById('rep-events').textContent = '0';
+      document.getElementById('fpga-ops').textContent = '—';
+      document.getElementById('partitioned').textContent = '0';
+      document.getElementById('avg-lat').textContent = '—';
+      
+      latencyChart.data.datasets[0].data = Array(20).fill(0);
+      throughputChart.data.datasets[0].data = Array(20).fill(0);
+      latencyChart.update();
+      throughputChart.update();
+      
+      // Reset regions and connections
+      regions.forEach(region => {
+        region.status = 'healthy';
+        region.load = Math.random();
+      });
+      d3Connections.forEach(conn => {
+        conn.active = Math.random() < 0.7;
+      });
+      updateD3Connections();
+      initRegionalStatus();
+      
+      log('Metrics and connections reset');
+    }
+
+    // Log message to activity log
+    function log(message) {
+      const logDiv = document.getElementById('log');
+      const timestamp = new Date().toISOString().substr(11, 8);
+      logDiv.innerHTML += `<div>[${timestamp}] ${message}</div>`;
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    // Start
+    init();
+  </script>
+</body>
+</html>
