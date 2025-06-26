@@ -2,13 +2,8 @@
 
 > **AtlasDB-Fpga-Geo-KV** is a research-grade prototype demonstrating a globally-distributed key-value store that leverages **FPGA acceleration** for high-throughput merge operations. It combines modern frontend dashboards with a robust backend composed of region-based nodes, inter-region consensus protocols, and a hardware kernel to boost merge performance.
 
-<p align="center">
-  ![dashboard](https://github.com/user-attachments/assets/641d210d-d767-40c1-980a-0d14c27a0a33)
-</p>
+![dashboard](https://github.com/user-attachments/assets/1f4bdcf3-1ef4-437b-96f8-95b7a50c716e)
 
-<p align="center"><i>Real-time geo-replication and FPGA acceleration, visualized beautifully</i></p>
-
----
 
 ## 🚀 Why FPGA Acceleration?
 
